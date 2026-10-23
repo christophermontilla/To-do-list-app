@@ -85,6 +85,11 @@ body {
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 
+.todo-form #deadline-input {
+    width: auto;
+    flex: 0 0 auto;
+}
+
 .todo-form input:focus,
 .search-box input:focus {
     border-color: var(--primary);
@@ -267,6 +272,24 @@ input:focus-visible {
     font-size: 14px;
 }
 
+.task-deadline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.task-deadline-input {
+    max-width: 145px;
+    padding: 2px 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: inherit;
+    font: inherit;
+}
+
 .completed .task-text {
     color: #9ca3af;
     text-decoration: line-through;
@@ -353,6 +376,18 @@ footer {
 
     #add-button {
         padding: 0 14px;
+    }
+
+    .todo-form {
+        flex-wrap: wrap;
+    }
+
+    .todo-form #todo-input {
+        flex: 1 1 100%;
+    }
+
+    .todo-form #deadline-input {
+        flex: 1;
     }
 
     .stats {
