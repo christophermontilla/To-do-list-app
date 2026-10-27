@@ -1,88 +1,13 @@
-gg
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="stylesheet" href="style.css">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>My To-Do List</title>
-    <link rel="stylesheet" href="style.css">
+    <title>Start the Java To-Do App</title>
 </head>
 <body>
-
-    <main class="todo-container">
-        <header class="header">
-            <div class="logo">✓</div>
-            <h1>My To-Do List</h1>
-            <p>Organize your day, one task at a time.</p>
-        </header>
-
-        <form id="todo-form" class="todo-form">
-            <input
-                type="text"
-                id="todo-input"
-                placeholder="What do you need to do?"
-                maxlength="200"
-                autocomplete="off"
-                aria-label="New task"
-                required
-            >
-            <button type="submit" id="add-button">+ Add</button>
-        </form>
-
-        <div class="search-box">
-            <input
-                type="search"
-                id="search-input"
-                placeholder="Search your tasks..."
-                aria-label="Search tasks"
-            >
-        </div>
-
-        <section class="stats">
-            <div class="stat-card">
-                <span id="total-count">0</span>
-                <small>Total Tasks</small>
-            </div>
-            <div class="stat-card">
-                <span id="active-count">0</span>
-                <small>Remaining</small>
-            </div>
-            <div class="stat-card">
-                <span id="completed-count">0</span>
-                <small>Completed</small>
-            </div>
-        </section>
-
-        <nav class="filters" aria-label="Filter tasks">
-            <button class="filter-btn active" data-filter="all">All</button>
-            <button class="filter-btn" data-filter="active">Active</button>
-            <button class="filter-btn" data-filter="completed">Completed</button>
-        </nav>
-
-        <section class="task-section">
-            <div class="task-heading">
-                <h2>Your Tasks</h2>
-                <button id="clear-completed" class="clear-btn">
-                    Clear completed
-                </button>
-            </div>
-
-            <ul id="todo-list" class="todo-list"></ul>
-
-            <div id="empty-state" class="empty-state">
-                <div class="empty-icon">📝</div>
-                <h3>No tasks yet</h3>
-                <p>Add your first task to get started!</p>
-            </div>
-        </section>
-
-        <footer>
-            <p>Stay focused. Keep making progress.</p>
-        </footer>
-    </main>
-
-    
-    <script src="main.java"></script>
+    <h1>To-do list Java server</h1>
+    <p>Run the app from this folder with <code>java Main.java</code>, then open
+       <a href="http://localhost:8080">http://localhost:8080</a>.</p>
 </body>
 </html>
