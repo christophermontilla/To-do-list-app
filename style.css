@@ -119,6 +119,8 @@ body {
 /* ADD TASK FORM */
 .todo-form {
     display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
     gap: 10px;
     margin-bottom: 15px;
 }
@@ -135,6 +137,23 @@ body {
     outline: none;
     font-size: 14px;
     transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.todo-form input[name="text"] {
+    flex: 1 1 220px;
+}
+
+.todo-form .date-field {
+    display: flex;
+    flex: 1 1 150px;
+    flex-direction: column;
+    gap: 5px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.todo-form .date-field input {
+    width: 100%;
 }
 
 .todo-form input:focus,
@@ -356,6 +375,18 @@ input:focus-visible {
     font-size: 11px;
 }
 
+.task-due-date {
+    display: block;
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.task-due-date.overdue {
+    color: var(--danger);
+    font-weight: bold;
+}
+
 .task-actions {
     display: flex;
     gap: 6px;
@@ -390,6 +421,10 @@ input:focus-visible {
     border-radius: 6px;
     background: var(--surface);
     color: var(--text);
+}
+
+.edit-form input[type="date"] {
+    width: auto;
 }
 
 .edit-form button {
