@@ -1,333 +1,429 @@
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.InetSocketAddress;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.UUID;
+import java.util.concurrent.Executors;
 
-const todoForm = document.getElementById("todo-form");
-const todoInput = document.getElementById("todo-input");
-const searchInput = document.getElementById("search-input");
-const todoList = document.getElementById("todo-list");
-const emptyState = document.getElementById("empty-state");
+public class Main {
+    private static final int PORT = 8080;
+    private static final int MAX_REQUEST_BYTES = 16_384;
+    private static final String DATA_FILE = "todo-data.properties";
+    private static final String STYLE_FILE = "style.css";
 
-const totalCount = document.getElementById("total-count");
-const activeCount = document.getElementById("active-count");
-const completedCount = document.getElementById("completed-count");
+    private final List<Task> tasks = new ArrayList<>();
+    private final Path dataPath = Path.of(DATA_FILE);
+    private final Path stylePath = Path.of(STYLE_FILE);
 
-const filterButtons = document.querySelectorAll(".filter-btn");
-const clearCompletedButton =
-    document.getElementById("clear-completed");
+    public static void main(String[] args) throws IOException {
+        Main app = new Main();
+        app.loadTasks();
 
-let todos = loadTodos();
-let currentFilter = "all";
-let searchText = "";
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress("127.0.0.1", PORT), 0);
+        server.createContext("/", app::handleRequest);
+        server.setExecutor(Executors.newFixedThreadPool(4));
+        server.start();
 
-// LOAD SAVED TASKS
-function loadTodos() {
-    try {
-        const savedTodos = localStorage.getItem("my-todo-tasks");
-        const parsedTodos = savedTodos ? JSON.parse(savedTodos) : [];
+        System.out.println("To-do app is running at http://localhost:" + PORT);
+        System.out.println("Press Ctrl+C to stop the server.");
+    }
 
-        if (!Array.isArray(parsedTodos)) {
-            return [];
+    private void handleRequest(HttpExchange exchange) throws IOException {
+        try {
+            if ("/style.css".equals(exchange.getRequestURI().getPath())) {
+                serveStylesheet(exchange);
+                return;
+            }
+
+            if (!"/".equals(exchange.getRequestURI().getPath())) {
+                send(exchange, 404, "text/plain; charset=utf-8", "Not found");
+                return;
+            }
+
+            boolean darkMode = "dark".equals(readCookie(exchange, "todo-theme"));
+            String method = exchange.getRequestMethod();
+
+            if ("POST".equals(method)) {
+                Map<String, String> form = parseForm(readRequestBody(exchange));
+                String action = form.getOrDefault("action", "");
+
+                if ("theme".equals(action)) {
+                    darkMode = !darkMode;
+                    exchange.getResponseHeaders().add(
+                            "Set-Cookie",
+                            "todo-theme=" + (darkMode ? "dark" : "light")
+                                    + "; Path=/; SameSite=Strict");
+                    redirect(exchange, "/");
+                    return;
+                }
+
+                if ("add".equals(action) || "edit".equals(action)) {
+                    String text = form.getOrDefault("text", "").trim();
+                    if (text.isEmpty() || text.length() > 200) {
+                        send(exchange, 400, "text/plain; charset=utf-8",
+                                "Task text must contain 1 to 200 characters.");
+                        return;
+                    }
+                }
+                if (!List.of("add", "toggle", "edit", "delete",
+                        "clear-completed").contains(action)) {
+                    send(exchange, 400, "text/plain; charset=utf-8",
+                            "Unknown task action.");
+                    return;
+                }
+
+                synchronized (tasks) {
+                    updateTasks(action, form);
+                    saveTasks();
+                }
+                redirect(exchange, "/");
+                return;
+            }
+
+            if (!"GET".equals(method)) {
+                exchange.getResponseHeaders().set("Allow", "GET, POST");
+                send(exchange, 405, "text/plain; charset=utf-8", "Method not allowed");
+                return;
+            }
+
+            Map<String, String> query = parseForm(exchange.getRequestURI().getRawQuery());
+            synchronized (tasks) {
+                send(exchange, 200, "text/html; charset=utf-8",
+                        renderPage(darkMode, query.getOrDefault("filter", "all"),
+                                query.getOrDefault("search", "")));
+            }
+        } catch (Exception error) {
+            error.printStackTrace(System.err);
+            if (exchange.getResponseCode() == -1) {
+                send(exchange, 500, "text/plain; charset=utf-8",
+                        "The request failed. Check the Java server output for details.");
+            }
+        } finally {
+            exchange.close();
+        }
+    }
+
+    private void updateTasks(String action, Map<String, String> form) {
+        String id = form.getOrDefault("id", "");
+
+        switch (action) {
+            case "add":
+                String text = form.getOrDefault("text", "").trim();
+                if (!text.isEmpty() && text.length() <= 200) {
+                    tasks.add(0, new Task(UUID.randomUUID().toString(), text,
+                            LocalDate.now().toString()));
+                }
+                break;
+            case "toggle":
+                findTask(id).ifPresent(task -> task.completed = !task.completed);
+                break;
+            case "edit":
+                String editedText = form.getOrDefault("text", "").trim();
+                if (!editedText.isEmpty() && editedText.length() <= 200) {
+                    findTask(id).ifPresent(task -> task.text = editedText);
+                }
+                break;
+            case "delete":
+                tasks.removeIf(task -> task.id.equals(id));
+                break;
+            case "clear-completed":
+                tasks.removeIf(task -> task.completed);
+                break;
+            default:
+                break;
+        }
+    }
+
+    private java.util.Optional<Task> findTask(String id) {
+        return tasks.stream().filter(task -> task.id.equals(id)).findFirst();
+    }
+
+    private String renderPage(boolean darkMode, String filter, String search) {
+        String safeFilter = List.of("all", "active", "completed").contains(filter)
+                ? filter : "all";
+        String normalizedSearch = search.trim().toLowerCase();
+        long completed = tasks.stream().filter(task -> task.completed).count();
+        long active = tasks.size() - completed;
+        List<Task> visibleTasks = tasks.stream()
+                .filter(task -> "all".equals(safeFilter)
+                        || ("active".equals(safeFilter) && !task.completed)
+                        || ("completed".equals(safeFilter) && task.completed))
+                .filter(task -> task.text.toLowerCase().contains(normalizedSearch))
+                .collect(java.util.stream.Collectors.toList());
+
+        StringBuilder html = new StringBuilder("""
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>My To-Do List</title>
+                    <link rel="stylesheet" href="/style.css">
+                </head>
+                <body%CLASS%>
+                    <main class="todo-container">
+                        <form class="theme-form" method="post">
+                            <input type="hidden" name="action" value="theme">
+                            <button id="theme-toggle" class="theme-toggle" type="submit"
+                                    aria-pressed="%PRESSED%">%THEME_LABEL%</button>
+                        </form>
+                        <header class="header">
+                            <div class="logo">✓</div>
+                            <h1>My To-Do List</h1>
+                            <p>Organize your day, one task at a time.</p>
+                        </header>
+                        <form class="todo-form" method="post">
+                            <input type="hidden" name="action" value="add">
+                            <input type="text" name="text" placeholder="What do you need to do?"
+                                   maxlength="200" autocomplete="off" aria-label="New task" required>
+                            <button type="submit" id="add-button">+ Add</button>
+                        </form>
+                        <form class="search-box" method="get">
+                            <input type="search" name="search" value="%SEARCH%"
+                                   placeholder="Search your tasks..." aria-label="Search tasks">
+                            <input type="hidden" name="filter" value="%FILTER%">
+                        </form>
+                        <section class="stats">
+                            <div class="stat-card"><span>%TOTAL%</span><small>Total Tasks</small></div>
+                            <div class="stat-card"><span>%ACTIVE%</span><small>Remaining</small></div>
+                            <div class="stat-card"><span>%COMPLETED%</span><small>Completed</small></div>
+                        </section>
+                        <nav class="filters" aria-label="Filter tasks">%FILTER_BUTTONS%</nav>
+                        <section class="task-section">
+                            <div class="task-heading">
+                                <h2>Your Tasks</h2>
+                                <form method="post">
+                                    <input type="hidden" name="action" value="clear-completed">
+                                    <button class="clear-btn" type="submit">Clear completed</button>
+                                </form>
+                            </div>
+                            <ul class="todo-list">%TASKS%</ul>
+                            %EMPTY_STATE%
+                        </section>
+                        <footer><p>Stay focused. Keep making progress.</p></footer>
+                    </main>
+                </body>
+                </html>
+                """);
+
+        String filterButtons = filterButton("all", safeFilter)
+                + filterButton("active", safeFilter)
+                + filterButton("completed", safeFilter);
+        StringBuilder taskMarkup = new StringBuilder();
+        for (Task task : visibleTasks) {
+            taskMarkup.append(renderTask(task));
         }
 
-        return parsedTodos.filter(todo =>
-            todo &&
-            typeof todo.id === "string" &&
-            typeof todo.text === "string" &&
-            typeof todo.completed === "boolean"
-        );
-    } catch (error) {
-        console.error("Could not load saved tasks:", error);
-        return [];
-    }
-}
+        String emptyState = visibleTasks.isEmpty()
+                ? "<div class=\"empty-state\"><div class=\"empty-icon\">📝</div>"
+                + "<h3>" + (tasks.isEmpty() ? "No tasks yet" : "Nothing to show") + "</h3>"
+                + "<p>" + (tasks.isEmpty() ? "Add your first task to get started!"
+                : "Try another search or change your filter.") + "</p></div>"
+                : "";
 
-// SAVE TASKS
-function saveTodos() {
-    try {
-        localStorage.setItem("my-todo-tasks", JSON.stringify(todos));
-        return true;
-    } catch (error) {
-        console.error("Could not save tasks:", error);
-        alert("Your changes could not be saved in this browser.");
-        return false;
-    }
-}
-
-// CREATE A UNIQUE TASK ID
-function createId() {
-    if (window.crypto && window.crypto.randomUUID) {
-        return window.crypto.randomUUID();
+        return html.toString()
+                .replace("%CLASS%", darkMode ? " class=\"dark-mode\"" : "")
+                .replace("%PRESSED%", Boolean.toString(darkMode))
+                .replace("%THEME_LABEL%", darkMode ? "☀ Light mode" : "☾ Dark mode")
+                .replace("%SEARCH%", escapeHtml(search))
+                .replace("%FILTER%", escapeHtml(safeFilter))
+                .replace("%TOTAL%", Integer.toString(tasks.size()))
+                .replace("%ACTIVE%", Long.toString(active))
+                .replace("%COMPLETED%", Long.toString(completed))
+                .replace("%FILTER_BUTTONS%", filterButtons)
+                .replace("%EMPTY_STATE%", emptyState)
+                .replace("%TASKS%", taskMarkup);
     }
 
-    return Date.now().toString(36) +
-        Math.random().toString(36).slice(2);
-}
-
-// ADD A NEW TASK
-todoForm.addEventListener("submit", function (event) {
-    event.preventDefault();
-
-    const text = todoInput.value.trim();
-
-    if (!text) {
-        todoInput.focus();
-        return;
+    private String filterButton(String filter, String currentFilter) {
+        String label = Character.toUpperCase(filter.charAt(0)) + filter.substring(1);
+        return "<a class=\"filter-btn" + (filter.equals(currentFilter) ? " active" : "")
+                + "\" href=\"/?filter=" + filter + "\">" + label + "</a>";
     }
 
-    const newTodo = {
-        id: createId(),
-        text: text,
-        completed: false,
-        createdAt: new Date().toISOString()
-    };
+    private String renderTask(Task task) {
+        String id = escapeHtml(task.id);
+        String text = escapeHtml(task.text);
+        String completedClass = task.completed ? " completed" : "";
+        String toggleLabel = task.completed ? "Undo" : "Complete";
+        return "<li class=\"todo-item" + completedClass + "\">"
+                + "<form class=\"task-toggle\" method=\"post\">"
+                + "<input type=\"hidden\" name=\"action\" value=\"toggle\">"
+                + "<input type=\"hidden\" name=\"id\" value=\"" + id + "\">"
+                + "<button class=\"toggle-btn\" type=\"submit\">" + toggleLabel + "</button></form>"
+                + "<div class=\"task-content\"><span class=\"task-text\">" + text + "</span>"
+                + "<small class=\"task-date\">Added " + escapeHtml(task.createdAt) + "</small></div>"
+                + "<details class=\"edit-controls\"><summary>Edit</summary>"
+                + "<form class=\"edit-form\" method=\"post\">"
+                + "<input type=\"hidden\" name=\"action\" value=\"edit\">"
+                + "<input type=\"hidden\" name=\"id\" value=\"" + id + "\">"
+                + "<input type=\"text\" name=\"text\" value=\"" + text
+                + "\" maxlength=\"200\" aria-label=\"Edit task\" required>"
+                + "<button type=\"submit\">Save</button></form></details>"
+                + "<form class=\"delete-form\" method=\"post\">"
+                + "<input type=\"hidden\" name=\"action\" value=\"delete\">"
+                + "<input type=\"hidden\" name=\"id\" value=\"" + id + "\">"
+                + "<button class=\"action-btn delete-btn\" type=\"submit\">Delete</button></form>"
+                + "</li>";
+    }
 
-    todos.unshift(newTodo);
-    saveTodos();
+    private void serveStylesheet(HttpExchange exchange) throws IOException {
+        if (!Files.exists(stylePath)) {
+            send(exchange, 404, "text/plain; charset=utf-8",
+                    "style.css was not found. Run the server from the app folder.");
+            return;
+        }
+        send(exchange, 200, "text/css; charset=utf-8",
+                Files.readString(stylePath, StandardCharsets.UTF_8));
+    }
 
-    todoInput.value = "";
-    todoInput.focus();
-
-    renderTodos();
-});
-
-// UPDATE STATISTICS
-function updateStats() {
-    const total = todos.length;
-    const completed = todos.filter(todo => todo.completed).length;
-    const active = total - completed;
-
-    totalCount.textContent = total;
-    activeCount.textContent = active;
-    completedCount.textContent = completed;
-}
-
-// FILTER AND SEARCH TASKS
-function getVisibleTodos() {
-    return todos.filter(todo => {
-        const matchesSearch = todo.text
-            .toLowerCase()
-            .includes(searchText.toLowerCase());
-
-        const matchesFilter =
-            currentFilter === "all" ||
-            (currentFilter === "active" && !todo.completed) ||
-            (currentFilter === "completed" && todo.completed);
-
-        return matchesSearch && matchesFilter;
-    });
-}
-
-// DISPLAY TASKS
-function renderTodos() {
-    todoList.replaceChildren();
-
-    const visibleTodos = getVisibleTodos();
-
-    visibleTodos.forEach(todo => {
-        const li = document.createElement("li");
-        li.className = "todo-item";
-
-        if (todo.completed) {
-            li.classList.add("completed");
+    private void loadTasks() throws IOException {
+        if (!Files.exists(dataPath)) {
+            return;
         }
 
-        // CHECKBOX
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        checkbox.className = "todo-checkbox";
-        checkbox.checked = todo.completed;
-        checkbox.setAttribute(
-            "aria-label",
-            `Mark ${todo.text} as ${todo.completed ? "active" : "completed"}`
-        );
+        Properties data = new Properties();
+        try (InputStream input = Files.newInputStream(dataPath)) {
+            data.load(input);
+        }
 
-        checkbox.addEventListener("change", () => {
-            toggleTodo(todo.id);
-        });
-
-        // TASK CONTENT
-        const content = document.createElement("div");
-        content.className = "task-content";
-
-        const taskText = document.createElement("span");
-        taskText.className = "task-text";
-        taskText.textContent = todo.text;
-
-        content.appendChild(taskText);
-
-        if (todo.createdAt) {
-            const date = new Date(todo.createdAt);
-
-            if (!Number.isNaN(date.getTime())) {
-                const dateLabel = document.createElement("small");
-                dateLabel.className = "task-date";
-                dateLabel.textContent =
-                    "Added " + date.toLocaleDateString();
-
-                content.appendChild(dateLabel);
+        int count = Integer.parseInt(data.getProperty("count", "0"));
+        for (int i = 0; i < count; i++) {
+            String prefix = "task." + i + ".";
+            String id = data.getProperty(prefix + "id");
+            String text = data.getProperty(prefix + "text");
+            if (id != null && text != null) {
+                Task task = new Task(id, text,
+                        data.getProperty(prefix + "createdAt", LocalDate.now().toString()));
+                task.completed = Boolean.parseBoolean(
+                        data.getProperty(prefix + "completed", "false"));
+                tasks.add(task);
             }
         }
-
-        // ACTION BUTTONS
-        const actions = document.createElement("div");
-        actions.className = "task-actions";
-
-        const editButton = document.createElement("button");
-        editButton.className = "action-btn edit-btn";
-        editButton.type = "button";
-        editButton.textContent = "Edit";
-        editButton.setAttribute("aria-label", `Edit ${todo.text}`);
-
-        editButton.addEventListener("click", () => {
-            editTodo(todo.id);
-        });
-
-        const deleteButton = document.createElement("button");
-        deleteButton.className = "action-btn delete-btn";
-        deleteButton.type = "button";
-        deleteButton.textContent = "Delete";
-        deleteButton.setAttribute("aria-label", `Delete ${todo.text}`);
-
-        deleteButton.addEventListener("click", () => {
-            deleteTodo(todo.id);
-        });
-
-        actions.append(editButton, deleteButton);
-        li.append(checkbox, content, actions);
-        todoList.appendChild(li);
-    });
-
-    // EMPTY STATE
-    emptyState.hidden = visibleTodos.length > 0;
-    todoList.hidden = visibleTodos.length === 0;
-
-    const emptyTitle = emptyState.querySelector("h3");
-    const emptyMessage = emptyState.querySelector("p");
-
-    if (todos.length === 0) {
-        emptyTitle.textContent = "No tasks yet";
-        emptyMessage.textContent =
-            "Add your first task to get started!";
-    } else if (visibleTodos.length === 0 && searchText) {
-        emptyTitle.textContent = "No matching tasks";
-        emptyMessage.textContent =
-            "Try another search or change your filter.";
-    } else {
-        emptyTitle.textContent = "Nothing to show";
-        emptyMessage.textContent =
-            "There are no tasks in this category.";
     }
 
-    updateStats();
-}
-
-// COMPLETE OR UNCOMPLETE A TASK
-function toggleTodo(id) {
-    todos = todos.map(todo => {
-        if (todo.id === id) {
-            return {
-                ...todo,
-                completed: !todo.completed
-            };
+    private void saveTasks() throws IOException {
+        Properties data = new Properties();
+        data.setProperty("count", Integer.toString(tasks.size()));
+        for (int i = 0; i < tasks.size(); i++) {
+            Task task = tasks.get(i);
+            String prefix = "task." + i + ".";
+            data.setProperty(prefix + "id", task.id);
+            data.setProperty(prefix + "text", task.text);
+            data.setProperty(prefix + "completed", Boolean.toString(task.completed));
+            data.setProperty(prefix + "createdAt", task.createdAt);
         }
 
-        return todo;
-    });
-
-    saveTodos();
-    renderTodos();
-}
-
-// EDIT A TASK
-function editTodo(id) {
-    const todo = todos.find(item => item.id === id);
-
-    if (!todo) return;
-
-    const newText = prompt("Edit your task:", todo.text);
-
-    if (newText === null) return;
-
-    const trimmedText = newText.trim();
-
-    if (!trimmedText) {
-        alert("Task cannot be empty.");
-        return;
-    }
-
-    todos = todos.map(item => {
-        if (item.id === id) {
-            return {
-                ...item,
-                text: trimmedText
-            };
+        Path temporary = dataPath.resolveSibling(dataPath.getFileName() + ".tmp");
+        try (var output = Files.newOutputStream(temporary)) {
+            data.store(output, "To-do list data");
         }
-
-        return item;
-    });
-
-    saveTodos();
-    renderTodos();
-}
-
-// DELETE A TASK
-function deleteTodo(id) {
-    const todo = todos.find(item => item.id === id);
-
-    if (!todo) return;
-
-    const confirmed = confirm(
-        `Are you sure you want to delete "${todo.text}"?`
-    );
-
-    if (!confirmed) return;
-
-    todos = todos.filter(item => item.id !== id);
-
-    saveTodos();
-    renderTodos();
-}
-
-// CHANGE FILTER
-filterButtons.forEach(button => {
-    button.addEventListener("click", () => {
-        currentFilter = button.dataset.filter;
-
-        filterButtons.forEach(btn => {
-            const isActive = btn === button;
-
-            btn.classList.toggle("active", isActive);
-            btn.setAttribute("aria-pressed", String(isActive));
-        });
-
-        renderTodos();
-    });
-});
-
-// SEARCH TASKS
-searchInput.addEventListener("input", () => {
-    searchText = searchInput.value.trim();
-    renderTodos();
-});
-
-// DELETE ALL COMPLETED TASKS
-clearCompletedButton.addEventListener("click", () => {
-    const completed = todos.filter(todo => todo.completed);
-
-    if (completed.length === 0) {
-        alert("There are no completed tasks to clear.");
-        return;
+        try {
+            Files.move(temporary, dataPath,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (java.nio.file.AtomicMoveNotSupportedException error) {
+            Files.move(temporary, dataPath,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
-    const confirmed = confirm(
-        `Delete all ${completed.length} completed task(s)?`
-    );
+    private static byte[] readRequestBody(HttpExchange exchange) throws IOException {
+        try (InputStream input = exchange.getRequestBody();
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[1024];
+            int total = 0;
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_REQUEST_BYTES) {
+                    throw new IOException("Request body is too large");
+                }
+                output.write(buffer, 0, read);
+            }
+            return output.toByteArray();
+        }
+    }
 
-    if (!confirmed) return;
+    private static Map<String, String> parseForm(byte[] body) {
+        return parseForm(new String(body, StandardCharsets.UTF_8));
+    }
 
-    todos = todos.filter(todo => !todo.completed);
+    private static Map<String, String> parseForm(String encoded) {
+        Map<String, String> values = new LinkedHashMap<>();
+        if (encoded == null || encoded.isEmpty()) {
+            return values;
+        }
+        for (String pair : encoded.split("&")) {
+            String[] parts = pair.split("=", 2);
+            String key = URLDecoder.decode(parts[0], StandardCharsets.UTF_8);
+            String value = parts.length > 1
+                    ? URLDecoder.decode(parts[1], StandardCharsets.UTF_8) : "";
+            values.put(key, value);
+        }
+        return values;
+    }
 
-    saveTodos();
-    renderTodos();
-});
+    private static String readCookie(HttpExchange exchange, String name) {
+        List<String> cookies = exchange.getRequestHeaders().get("Cookie");
+        if (cookies == null) {
+            return "";
+        }
+        for (String cookieHeader : cookies) {
+            for (String cookie : cookieHeader.split(";")) {
+                String[] parts = cookie.trim().split("=", 2);
+                if (parts.length == 2 && name.equals(parts[0])) {
+                    return parts[1];
+                }
+            }
+        }
+        return "";
+    }
 
-// INITIAL DISPLAY
-renderTodos();
+    private static String escapeHtml(String value) {
+        return value.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    private static void redirect(HttpExchange exchange, String location) throws IOException {
+        exchange.getResponseHeaders().set("Location", location);
+        exchange.sendResponseHeaders(303, -1);
+    }
+
+    private static void send(HttpExchange exchange, int status, String contentType,
+                             String body) throws IOException {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        exchange.sendResponseHeaders(status, bytes.length);
+        exchange.getResponseBody().write(bytes);
+    }
+
+    private static final class Task {
+        private final String id;
+        private final String createdAt;
+        private String text;
+        private boolean completed;
+
+        private Task(String id, String text, String createdAt) {
+            this.id = id;
+            this.text = text;
+            this.createdAt = createdAt;
+        }
+    }
+}
