@@ -26,6 +26,7 @@ function getTodayDate() {
 
     return `${year}-${month}-${day}`;
 }
+
 function getDeadlineStatus(todo) {
     if (todo.completed) {
         return {
@@ -36,7 +37,7 @@ function getDeadlineStatus(todo) {
 
     if (!todo.dueDate) {
         return {
-            text: "No deadline",
+            text: "No due date",
             className: "deadline-upcoming"
         };
     }
@@ -45,14 +46,14 @@ function getDeadlineStatus(todo) {
 
     if (todo.dueDate < today) {
         return {
-            text: "Overdue!",
+            text: "Overdue",
             className: "deadline-overdue"
         };
     }
 
     if (todo.dueDate === today) {
         return {
-            text: "Due Today!",
+            text: "Due today",
             className: "deadline-today"
         };
     }
@@ -62,6 +63,7 @@ function getDeadlineStatus(todo) {
         className: "deadline-upcoming"
     };
 }
+
 deadlineInput.value = getTodayDate();
 
 // LOAD SAVED TASKS
@@ -74,19 +76,12 @@ function loadTodos() {
             return [];
         }
 
-        return parsedTodos
-            .filter(todo =>
-                todo &&
-                typeof todo.id === "string" &&
-                typeof todo.text === "string" &&
-                typeof todo.completed === "boolean"
-            )
-            .map(todo => ({
-                ...todo,
-                dueDate: typeof todo.dueDate === "string" && todo.dueDate
-                    ? todo.dueDate
-                    : getTodayDate()
-            }));
+        return parsedTodos.filter(todo =>
+            todo &&
+            typeof todo.id === "string" &&
+            typeof todo.text === "string" &&
+            typeof todo.completed === "boolean"
+        );
     } catch (error) {
         console.error("Could not load saved tasks:", error);
         return [];
@@ -120,8 +115,9 @@ todoForm.addEventListener("submit", function (event) {
     event.preventDefault();
 
     const text = todoInput.value.trim();
+    const dueDate = deadlineInput.value;
 
-    if (!text) {
+    if (!text || !dueDate) {
         todoInput.focus();
         return;
     }
@@ -129,7 +125,7 @@ todoForm.addEventListener("submit", function (event) {
     const newTodo = {
         id: createId(),
         text: text,
-        dueDate: deadlineInput.value,
+        dueDate: dueDate,
         completed: false,
         createdAt: new Date().toISOString()
     };
@@ -219,31 +215,24 @@ function renderTodos() {
         deadlineEditor.type = "date";
         deadlineEditor.className = "task-deadline-input";
         deadlineEditor.value = todo.dueDate || "";
-        deadlineEditor.setAttribute("aria-label", `Deadline for ${todo.text}`);
+        deadlineEditor.setAttribute("aria-label", `Due date for ${todo.text}`);
         deadlineEditor.addEventListener("change", () => {
-            if (!deadlineEditor.value) {
-                deadlineEditor.value = todo.dueDate;
-                return;
-            }
-
             todos = todos.map(item => item.id === todo.id
                 ? { ...item, dueDate: deadlineEditor.value }
                 : item
             );
             saveTodos();
+            renderTodos();
         });
 
-        deadline.append(deadlineLabel, deadlineEditor);
+        const reminder = document.createElement("span");
+        reminder.className = "deadline-reminder";
+        const status = getDeadlineStatus(todo);
+        reminder.textContent = status.text;
+        reminder.classList.add(status.className);
 
-const reminder = document.createElement("span");
-reminder.className = "deadline-reminder";
-
-const status = getDeadlineStatus(todo);
-reminder.textContent = status.text;
-reminder.classList.add(status.className);
-
-deadline.appendChild(reminder);
-content.appendChild(deadline);
+        deadline.append(deadlineLabel, deadlineEditor, reminder);
+        content.appendChild(deadline);
 
         if (todo.createdAt) {
             const date = new Date(todo.createdAt);
